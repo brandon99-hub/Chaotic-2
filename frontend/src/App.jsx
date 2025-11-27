@@ -2,23 +2,27 @@ import { useState } from 'react'
 import Registration from './components/Registration'
 import Login from './components/Login'
 import Dashboard from './components/Dashboard'
+import DeviceEnrollment from './components/DeviceEnrollment'
+import EnrollDeviceModal from './components/EnrollDeviceModal'
 
 function App() {
   const [view, setView] = useState('home')
   const [user, setUser] = useState(null)
+  const [showEnrollModal, setShowEnrollModal] = useState(false)
+  const [enrollUserId, setEnrollUserId] = useState(null)
 
   const handleLogout = () => {
     setUser(null)
     setView('home')
   }
 
-  const handleLoginSuccess = (username) => {
-    setUser(username)
+  const handleLoginSuccess = (username, deviceId = null) => {
+    setUser({ username, deviceId })
     setView('dashboard')
   }
 
   if (view === 'dashboard' && user) {
-    return <Dashboard user={user} onLogout={handleLogout} />
+    return <Dashboard user={typeof user === 'string' ? user : user.username} onLogout={handleLogout} />
   }
 
   return (
@@ -35,54 +39,68 @@ function App() {
           <div className="inline-block mb-6 relative">
             <div className="absolute inset-0 bg-gradient-to-r from-primary-500 to-purple-500 blur-2xl opacity-20 animate-pulse"></div>
             <h1 className="text-6xl font-bold mb-2 bg-gradient-to-r from-primary-400 via-purple-400 to-pink-400 bg-clip-text text-transparent relative animate-fade-in">
-              zkSNARK Authentication
+              zkSNARK + Hardware Auth
             </h1>
           </div>
           <p className="text-2xl text-gray-300 mb-3 font-light">
-            Passwordless Authentication with Zero-Knowledge Proofs
+            Hardware-Attested Passwordless Authentication
           </p>
           <p className="text-sm text-gray-400 max-w-2xl mx-auto leading-relaxed">
-            🔒 Your password never leaves your browser. We use zkSNARKs to prove you know your password without revealing it.
+            🔒 TPM/TEE attestation + Zero-Knowledge Proofs for maximum security
           </p>
         </div>
 
         {view === 'home' && (
           <>
             {/* Hero Section */}
-            <div className="max-w-4xl mx-auto mb-16">
-              <div className="grid md:grid-cols-2 gap-6">
+            <div className="max-w-6xl mx-auto mb-16">
+              <div className="grid md:grid-cols-3 gap-6">
                 <button
                   onClick={() => setView('register')}
-                  className="group relative overflow-hidden bg-gradient-to-br from-primary-600 to-purple-600 hover:from-primary-500 hover:to-purple-500 text-white font-bold py-8 px-8 rounded-2xl transition-all duration-300 transform hover:scale-105 shadow-2xl hover:shadow-primary-500/50"
+                  className="group relative overflow-hidden bg-gradient-to-br from-primary-600 to-purple-600 hover:from-primary-500 hover:to-purple-500 text-white font-bold py-6 px-6 rounded-2xl transition-all duration-300 transform hover:scale-105 shadow-2xl hover:shadow-primary-500/50"
                 >
                   <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
                   <div className="relative">
-                    <svg className="w-12 h-12 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg className="w-10 h-10 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
                     </svg>
-                    <div className="text-2xl mb-2">Register</div>
-                    <div className="text-sm opacity-90">Create new account</div>
+                    <div className="text-xl mb-1">Register</div>
+                    <div className="text-xs opacity-90">Create account</div>
                   </div>
                 </button>
 
                 <button
                   onClick={() => setView('login')}
-                  className="group relative overflow-hidden bg-gradient-to-br from-gray-700 to-gray-800 hover:from-gray-600 hover:to-gray-700 text-white font-bold py-8 px-8 rounded-2xl transition-all duration-300 transform hover:scale-105 shadow-2xl hover:shadow-gray-500/50"
+                  className="group relative overflow-hidden bg-gradient-to-br from-gray-700 to-gray-800 hover:from-gray-600 hover:to-gray-700 text-white font-bold py-6 px-6 rounded-2xl transition-all duration-300 transform hover:scale-105 shadow-2xl hover:shadow-gray-500/50"
                 >
                   <div className="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
                   <div className="relative">
-                    <svg className="w-12 h-12 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg className="w-10 h-10 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
                     </svg>
-                    <div className="text-2xl mb-2">Login</div>
-                    <div className="text-sm opacity-90">Access your account</div>
+                    <div className="text-xl mb-1">Login</div>
+                    <div className="text-xs opacity-90">Simple mode</div>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => setView('hardware-login')}
+                  className="group relative overflow-hidden bg-gradient-to-br from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-white font-bold py-6 px-6 rounded-2xl transition-all duration-300 transform hover:scale-105 shadow-2xl hover:shadow-orange-500/50"
+                >
+                  <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+                  <div className="relative">
+                    <svg className="w-10 h-10 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                    </svg>
+                    <div className="text-xl mb-1">Hardware Login</div>
+                    <div className="text-xs opacity-90">Attested auth</div>
                   </div>
                 </button>
               </div>
             </div>
 
             {/* Features Grid */}
-            <div className="grid md:grid-cols-3 gap-6 mb-16">
+              <div className="grid md:grid-cols-3 gap-6 mb-16">
               <div className="card p-6 hover:shadow-2xl hover:shadow-primary-500/20 transition-all duration-300 transform hover:-translate-y-1">
                 <div className="bg-primary-500 bg-opacity-20 w-14 h-14 rounded-lg flex items-center justify-center mb-4">
                   <svg className="w-8 h-8 text-primary-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -116,6 +134,18 @@ function App() {
                 <h3 className="text-xl font-bold text-white mb-2">Browser Secure</h3>
                 <p className="text-gray-400 text-sm leading-relaxed">
                   All cryptographic operations happen in your browser. Your password never leaves your device.
+                </p>
+              </div>
+
+              <div className="card p-6 hover:shadow-2xl hover:shadow-orange-500/20 transition-all duration-300 transform hover:-translate-y-1">
+                <div className="bg-orange-500 bg-opacity-20 w-14 h-14 rounded-lg flex items-center justify-center mb-4">
+                  <svg className="w-8 h-8 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                  </svg>
+                </div>
+                <h3 className="text-xl font-bold text-white mb-2">Hardware Attested</h3>
+                <p className="text-gray-400 text-sm leading-relaxed">
+                  TPM 2.0 device attestation with PCR verification for hardware-backed trust.
                 </p>
               </div>
             </div>
@@ -163,6 +193,16 @@ function App() {
                     <p className="text-gray-400 text-sm">During login, your browser generates a Groth16 zkSNARK proof that you know X without revealing it.</p>
                   </div>
                 </div>
+
+                <div className="flex items-start gap-4">
+                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-primary-500 bg-opacity-20 flex items-center justify-center text-primary-400 font-bold">
+                    5
+                  </div>
+                  <div>
+                    <h4 className="text-white font-semibold mb-1">Hardware Attestation (Optional)</h4>
+                    <p className="text-gray-400 text-sm">For maximum security, enroll your device to add TPM attestation with challenge-response protocol.</p>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -206,12 +246,45 @@ function App() {
             onSuccess={handleLoginSuccess}
           />
         )}
+
+        {view === 'enroll' && enrollUserId && (
+          <DeviceEnrollment
+            userId={enrollUserId}
+            onBack={() => {
+              setEnrollUserId(null)
+              setView('home')
+            }}
+            onEnrollmentComplete={(deviceId) => {
+              setEnrollUserId(null)
+              setView('hardware-login')
+            }}
+          />
+        )}
+
+        {/* Enroll Device Modal */}
+        <EnrollDeviceModal
+          isOpen={showEnrollModal}
+          onClose={() => setShowEnrollModal(false)}
+          onEnroll={(userId) => {
+            setEnrollUserId(userId)
+            setShowEnrollModal(false)
+            setView('enroll')
+          }}
+        />
+
+        {view === 'hardware-login' && (
+          <Login
+            onBack={() => setView('home')}
+            onSuccess={handleLoginSuccess}
+            hardwareMode={true}
+          />
+        )}
       </div>
 
       <footer className="mt-12 text-center text-gray-400 text-sm relative z-10">
         <div className="inline-block px-6 py-3 bg-gray-800 bg-opacity-30 backdrop-blur-md rounded-full border border-gray-700 border-opacity-30">
-          <p className="font-medium">Built with zkSNARKs, Chaos Theory, and Modern Cryptography</p>
-          <p className="mt-1 text-xs text-gray-500">BN254 Curve • Groth16 • 6D Hyper-Chaotic Systems</p>
+          <p className="font-medium">Built with zkSNARKs, TPM 2.0, and Modern Cryptography</p>
+          <p className="mt-1 text-xs text-gray-500">BN254 Curve • Groth16 • TPM Attestation • Hardware Security</p>
         </div>
       </footer>
     </div>

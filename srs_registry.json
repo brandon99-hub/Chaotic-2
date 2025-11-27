@@ -1,0 +1,14 @@
+{
+  "default_srs_v1": {
+    "srs_id": "default_srs_v1",
+    "created_at": 1764233264,
+    "ceremony_transcript": "Development SRS - Not for production",
+    "participants": [],
+    "participant_count": 0,
+    "proving_key_path": "keys/auth_proving_key.zkey",
+    "verification_key_path": "keys/auth_verification_key.json",
+    "attestation_hashes": [],
+    "status": "active",
+    "deprecated_at": null
+  }
+}
