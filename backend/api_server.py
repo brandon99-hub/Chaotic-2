@@ -196,9 +196,19 @@ async def register_user(request: RegisterRequest):
             g0
         )
         
-        # Also register in hardware server if available
+        # Also register in hardware server and AUTO-ENROLL machine if available
         if HARDWARE_AVAILABLE and success:
             hw_server.register_user(request.hr_id, Y, g0, request.policy if hasattr(request, 'policy') else "default")
+            
+            # IDENTITY LOCK: Auto-enroll the registering machine
+            try:
+                enroll_res = device_manager.enroll_device(request.device_id, request.hr_id)
+                if enroll_res["success"]:
+                    print(f"[Identity Lock] Machine {request.device_id} auto-enrolled for {request.hr_id}")
+                    # Log the enrollment
+                    ledger.log_device_enrollment(request.device_id, request.hr_id, enroll_res["cert_hash"])
+            except Exception as enroll_err:
+                print(f"[Identity Lock] Auto-enrollment warning: {str(enroll_err)}")
         
         if not success:
             raise HTTPException(status_code=400, detail=message)

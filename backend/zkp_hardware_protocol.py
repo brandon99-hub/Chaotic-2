@@ -6,9 +6,23 @@ Implements the complete protocol from the ZKP + zk-SNARK + Hardware specificatio
 import time
 import hashlib
 import secrets
+import sys
+from pathlib import Path
 from typing import Dict, Tuple, Optional
-from hash_utils import hash_password_to_field, compute_commitment, reduce_to_field
-from zksnark_utils import generate_proof, verify_proof
+
+# Fix pathing so hardware modules can always see their local dependencies
+current_dir = Path(__file__).parent
+if str(current_dir) not in sys.path:
+    sys.path.append(str(current_dir))
+
+try:
+    from hash_utils import hash_password_to_field, compute_commitment, reduce_to_field
+    from zksnark_utils import generate_proof, verify_proof
+except ImportError:
+    # Handle direct script execution or package imports
+    from .hash_utils import hash_password_to_field, compute_commitment, reduce_to_field
+    from .zksnark_utils import generate_proof, verify_proof
+
 from hardware.tpm_integration import get_tpm_manager
 from hardware.device_manager import DeviceManager
 from hardware.attestation_verifier import AttestationVerifier
