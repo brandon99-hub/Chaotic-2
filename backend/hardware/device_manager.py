@@ -22,7 +22,7 @@ class DeviceManager:
     - Device state tracking
     """
     
-    def __init__(self, storage_path: str = "devices.json"):
+    def __init__(self, storage_path: str = "data/devices.json"):
         """
         Initialize device manager.
         
@@ -107,6 +107,8 @@ class DeviceManager:
             "pcr_baseline": {str(k): v.hex() for k, v in pcrs.items()},
             "enrolled_at": now,
             "last_seen": now,
+            "machine_alias": profile.get("machine_alias", "New Secure Device"),
+            "site_registrations": [],
             "status": "active",
         }
 
@@ -131,6 +133,21 @@ class DeviceManager:
                 response["message"] = "Device repaired with new signing material"
 
         return response
+
+    def log_site_registration(self, device_id: str, site_origin: str):
+        """Log that this device was used on a specific site."""
+        if device_id in self.devices:
+            if site_origin not in self.devices[device_id].get("site_registrations", []):
+                if "site_registrations" not in self.devices[device_id]:
+                    self.devices[device_id]["site_registrations"] = []
+                self.devices[device_id]["site_registrations"].append(site_origin)
+                self._save_devices()
+
+    def update_machine_alias(self, device_id: str, new_alias: str):
+        """Update the friendly name of the machine."""
+        if device_id in self.devices:
+            self.devices[device_id]["machine_alias"] = new_alias
+            self._save_devices()
 
     def generate_attestation(
         self, device_id: str, nonce: int, timestamp: int, srs_id: str

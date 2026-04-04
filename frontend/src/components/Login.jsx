@@ -4,25 +4,29 @@ import { hashPasswordToField } from '../utils/crypto'
 import { generateProof } from '../utils/snarkProof'
 import { useToast } from '../contexts/ToastContext'
 
-// Generate browser fingerprint for device ID
-const generateDeviceFingerprint = () => {
-  const userAgent = navigator.userAgent
-  const platform = navigator.platform
-  const language = navigator.language
-  const fingerprint = `${userAgent}-${platform}-${language}`
-  
-  const hash = Array.from(fingerprint)
-    .reduce((hash, char) => {
-      return ((hash << 5) - hash) + char.charCodeAt(0)
-    }, 0)
-  
-  return `device_${Math.abs(hash).toString(16)}`
+// Persist device fingerprint per user in localStorage
+const getOrCreateDeviceId = (userId) => {
+  if (!userId) {
+    // Pre-login: use a temporary fingerprint; it will be locked to the user on first enroll
+    const fingerprint = `${navigator.userAgent}-${navigator.platform}-${navigator.language}`
+    const hash = Array.from(fingerprint).reduce((h, c) => (((h << 5) - h) + c.charCodeAt(0)) | 0, 0)
+    return `device_${Math.abs(hash).toString(16)}`
+  }
+  const key = `chaotic_device_${userId}`
+  let stored = localStorage.getItem(key)
+  if (!stored) {
+    const fingerprint = `${navigator.userAgent}-${navigator.platform}-${navigator.language}`
+    const hash = Array.from(fingerprint).reduce((h, c) => (((h << 5) - h) + c.charCodeAt(0)) | 0, 0)
+    stored = `device_${Math.abs(hash).toString(16)}`
+    localStorage.setItem(key, stored)
+  }
+  return stored
 }
 
 function Login({ onBack, onSuccess, hardwareMode = false }) {
   const [hrId, setHrId] = useState('')
   const [password, setPassword] = useState('')
-  const [deviceId, setDeviceId] = useState(generateDeviceFingerprint())
+  const [deviceId, setDeviceId] = useState(() => getOrCreateDeviceId(''))
   const [loading, setLoading] = useState(false)
   const [stage, setStage] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -37,12 +41,14 @@ function Login({ onBack, onSuccess, hardwareMode = false }) {
   }
 
   const requestHardwareChallenge = async (retry = true) => {
+    // Resolve the persistent device ID now that we know the hrId
+    const persistedDeviceId = getOrCreateDeviceId(hrId)
     try {
-      return await api.requestChallenge(hrId, deviceId)
+      return await api.requestChallenge(hrId, persistedDeviceId)
     } catch (err) {
       if (retry && hardwareMode && needsAutoEnroll(err.message || '')) {
         toast.info('Pairing this device to your account…')
-        await api.enrollDevice(deviceId, hrId)
+        await api.enrollDevice(persistedDeviceId, hrId)
         return await requestHardwareChallenge(false)
       }
       throw err
@@ -115,21 +121,21 @@ function Login({ onBack, onSuccess, hardwareMode = false }) {
 
     setStage('Generating zkSNARK proof... (this may take 10-30 seconds)')
     console.log('[Login] Generating zkSNARK proof...')
-    
+
     const { proof, publicSignals } = await generateProof(
       BigInt(userData.g0),
       secretX,
       BigInt(userData.Y)
     )
-    
+
     console.log('[Login] Proof generated successfully')
 
     setStage('Verifying proof with server...')
     const result = await api.login(hrId, proof, publicSignals)
-    
+
     console.log('[Login] Authentication successful:', result)
     toast.success(`Welcome back, ${hrId}! Authentication successful.`)
-    
+
     setTimeout(() => {
       onSuccess(hrId)
     }, 1000)
@@ -173,11 +179,11 @@ function Login({ onBack, onSuccess, hardwareMode = false }) {
     const data = `${nonce}||${timestamp}||${srsId}`
     const enc = new TextEncoder()
     const hash = await crypto.subtle.digest('SHA-256', enc.encode(data))
-    const sig = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2,'0')).join('')
+    const sig = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('')
     const pcrs = {}
-    for (let i of [0,1,2,3,7]) {
+    for (let i of [0, 1, 2, 3, 7]) {
       const pcrHash = await crypto.subtle.digest('SHA-256', enc.encode(`PCR${i}_${deviceId}`))
-      pcrs[i] = Array.from(new Uint8Array(pcrHash)).map(b => b.toString(16).padStart(2,'0')).join('')
+      pcrs[i] = Array.from(new Uint8Array(pcrHash)).map(b => b.toString(16).padStart(2, '0')).join('')
     }
     return {
       signature: sig,
@@ -194,7 +200,7 @@ function Login({ onBack, onSuccess, hardwareMode = false }) {
     <div className="card p-8 max-w-md mx-auto relative overflow-hidden">
       {/* Decorative gradient */}
       <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-green-500 via-primary-500 to-purple-500"></div>
-      
+
       <div className="mb-6">
         <div className="flex items-center gap-3 mb-3">
           <div className="p-2 bg-green-500 bg-opacity-20 rounded-lg">
@@ -305,7 +311,7 @@ function Login({ onBack, onSuccess, hardwareMode = false }) {
               hardwareMode ? 'Login with Attestation' : 'Login'
             )}
           </button>
-          
+
           <button
             type="button"
             onClick={onBack}
@@ -323,7 +329,7 @@ function Login({ onBack, onSuccess, hardwareMode = false }) {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
           <p className="text-xs text-gray-300 leading-relaxed">
-            Your browser will generate a zkSNARK proof that you know the password 
+            Your browser will generate a zkSNARK proof that you know the password
             without revealing it. The proof generation may take 10-30 seconds.
           </p>
         </div>

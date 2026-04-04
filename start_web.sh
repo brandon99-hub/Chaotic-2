@@ -25,7 +25,8 @@ if [ ! -f "static/auth.wasm" ]; then
 fi
 
 echo "Starting Backend API Server..."
-python3 api_server.py &
+export PYTHONPATH="$(pwd)/backend"
+python3 backend/api_server.py &
 BACKEND_PID=$!
 echo "Backend PID: $BACKEND_PID"
 echo "Backend URL: http://localhost:8000"

@@ -21,7 +21,7 @@ class TransparencyLedger:
     - Attestation verifications
     """
     
-    def __init__(self, ledger_path: str = "transparency_ledger.jsonl"):
+    def __init__(self, ledger_path: str = "data/transparency_ledger.jsonl"):
         """
         Initialize transparency ledger.
         

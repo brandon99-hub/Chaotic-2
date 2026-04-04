@@ -21,7 +21,7 @@ class AuditLogger:
     - Policy violations
     """
     
-    def __init__(self, log_file: str = "audit.log"):
+    def __init__(self, log_file: str = "data/audit.log"):
         """
         Initialize audit logger.
         

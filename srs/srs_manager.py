@@ -21,7 +21,7 @@ class SRSManager:
     - Link to transparency ledger for audit
     """
     
-    def __init__(self, storage_path: str = "srs_registry.json"):
+    def __init__(self, storage_path: str = "data/srs_registry.json"):
         """
         Initialize SRS manager.
         

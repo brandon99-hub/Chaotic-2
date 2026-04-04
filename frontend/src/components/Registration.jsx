@@ -4,27 +4,33 @@ import { hashPasswordToField, computeCommitment, reduceToField } from '../utils/
 import { useToast } from '../contexts/ToastContext'
 import PasswordStrength from './PasswordStrength'
 
-// Generate browser fingerprint for automatic device enrollment
-const generateDeviceFingerprint = () => {
-  const userAgent = navigator.userAgent
-  const platform = navigator.platform
-  const language = navigator.language
-  const fingerprint = `${userAgent}-${platform}-${language}`
-  
-  const hash = Array.from(fingerprint)
-    .reduce((hash, char) => {
-      return ((hash << 5) - hash) + char.charCodeAt(0)
-    }, 0)
-  
-  return `device_${Math.abs(hash).toString(16)}`
+// Persist device fingerprint in localStorage so it survives page refreshes
+const getOrCreateDeviceId = (userId) => {
+  const key = `chaotic_device_${userId}`
+  let stored = localStorage.getItem(key)
+  if (!stored) {
+    const fingerprint = `${navigator.userAgent}-${navigator.platform}-${navigator.language}`
+    const hash = Array.from(fingerprint)
+      .reduce((h, c) => (((h << 5) - h) + c.charCodeAt(0)) | 0, 0)
+    stored = `device_${Math.abs(hash).toString(16)}`
+    localStorage.setItem(key, stored)
+  }
+  return stored
 }
+
+// Detect ?odoo=true URL param
+const isOdooFlow = new URLSearchParams(window.location.search).get('odoo') === 'true'
+const CHAOTIC_API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 function Registration({ onBack, onSuccess }) {
   const [hrId, setHrId] = useState('')
+  const [email, setEmail] = useState('')
+  const [fullName, setFullName] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
+  const [odooStep, setOdooStep] = useState('')
   const toast = useToast()
 
   const handleSubmit = async (e) => {
@@ -51,38 +57,48 @@ function Registration({ onBack, onSuccess }) {
       console.log('[Registration] Requesting g0 from server...')
       toast.info('Generating cryptographic parameters...')
       const { g0 } = await api.getG0()
-      console.log('[Registration] Received g0:', g0)
 
-      console.log('[Registration] Hashing password...')
       const secretX = await hashPasswordToField(password)
-      console.log('[Registration] Password hashed to field element')
-
-      console.log('[Registration] Computing commitment...')
       const Y = computeCommitment(g0, secretX)
-      console.log('[Registration] Commitment computed:', Y.toString())
 
-      console.log('[Registration] Registering user...')
-      const result = await api.register(hrId, Y.toString(), g0)
-      
-      console.log('[Registration] Success:', result)
-      toast.success(`✓ Account created! Enrolling device...`)
-      
-      // Automatically enroll this device
+      await api.register(hrId, Y.toString(), g0)
+      toast.success('✓ Account created! Enrolling device...')
+
+      // Persist device ID and enroll
+      const deviceId = getOrCreateDeviceId(hrId)
       try {
-        const deviceId = generateDeviceFingerprint()
-        console.log('[Registration] Auto-enrolling device:', deviceId)
         await api.enrollDevice(deviceId, hrId)
-        console.log('[Registration] ✓ Device auto-enrolled')
-        toast.success(`✓ Account & device enrolled! Ready to login.`)
+        toast.success('✓ Device enrolled!')
       } catch (enrollError) {
         console.error('[Registration] Device enrollment failed:', enrollError)
         toast.warning('Account created but device enrollment failed')
       }
-      
-      setTimeout(() => {
-        onSuccess()
-      }, 2000)
-      
+
+      // If launched from Odoo (?odoo=true), provision an Odoo account too
+      if (isOdooFlow && email) {
+        setOdooStep('Provisioning Odoo account...')
+        try {
+          const odooRes = await fetch(`${CHAOTIC_API}/api/register/odoo`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ hr_id: hrId, email, full_name: fullName }),
+          })
+          const odooJson = await odooRes.json()
+          if (odooJson.success) {
+            toast.success('✓ Odoo account ready! Redirecting back...')
+            setTimeout(() => { window.location.href = 'http://localhost:8069/web/login' }, 2000)
+            return
+          } else {
+            toast.warning(`Odoo provisioning: ${odooJson.detail || 'failed'}`)
+          }
+        } catch (odooErr) {
+          console.error('[Registration] Odoo provisioning error:', odooErr)
+          toast.warning('Odoo account provisioning failed — you can still use Chaotic login.')
+        }
+        setOdooStep('')
+      }
+
+      setTimeout(() => onSuccess(), 2000)
     } catch (err) {
       console.error('[Registration] Error:', err)
       toast.error(err.message || 'Registration failed')
@@ -95,7 +111,7 @@ function Registration({ onBack, onSuccess }) {
     <div className="card p-8 max-w-md mx-auto relative overflow-hidden">
       {/* Decorative gradient */}
       <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-primary-500 via-purple-500 to-pink-500"></div>
-      
+
       <div className="mb-6">
         <div className="flex items-center gap-3 mb-3">
           <div className="p-2 bg-primary-500 bg-opacity-20 rounded-lg">
@@ -105,10 +121,29 @@ function Registration({ onBack, onSuccess }) {
           </div>
           <h2 className="text-3xl font-bold text-white">Register</h2>
         </div>
-        <p className="text-gray-400 text-sm">Create a new account with zero-knowledge authentication</p>
+        <p className="text-gray-400 text-sm">
+          {isOdooFlow
+            ? '🏢 Creating your Chaotic account for Odoo login'
+            : 'Create a new account with zero-knowledge authentication'}
+        </p>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4">
+        {/* Odoo-flow extra fields */}
+        {isOdooFlow && (
+          <>
+            <div>
+              <label className="label">Full Name</label>
+              <input type="text" value={fullName} onChange={e => setFullName(e.target.value)}
+                className="input-field" placeholder="Your display name" disabled={loading} />
+            </div>
+            <div>
+              <label className="label">Email (Odoo login)</label>
+              <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+                className="input-field" placeholder="you@example.com" disabled={loading} required />
+            </div>
+          </>
+        )}
         <div>
           <label className="label">Username (HR_ID)</label>
           <input
@@ -221,7 +256,7 @@ function Registration({ onBack, onSuccess }) {
               'Register'
             )}
           </button>
-          
+
           <button
             type="button"
             onClick={onBack}
@@ -239,7 +274,7 @@ function Registration({ onBack, onSuccess }) {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
           <p className="text-xs text-gray-300 leading-relaxed">
-            Your password is hashed in the browser and never sent to the server. 
+            Your password is hashed in the browser and never sent to the server.
             Only a cryptographic commitment is stored.
           </p>
         </div>

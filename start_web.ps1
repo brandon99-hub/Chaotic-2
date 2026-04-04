@@ -62,7 +62,8 @@ if (-not (Test-Path "static\auth.wasm")) {
 }
 
 Write-Host "Starting Backend API Server..." -ForegroundColor Green
-$backend = Start-Process powershell -ArgumentList "-NoExit", "-Command", "python api_server.py" -PassThru
+$env:PYTHONPATH = Join-Path (Get-Location) "backend"
+$backend = Start-Process powershell -ArgumentList "-NoExit", "-Command", "$env:PYTHONPATH='$(Join-Path (Get-Location) 'backend')'; python backend/api_server.py" -PassThru
 Write-Host "Backend PID: $($backend.Id)" -ForegroundColor Gray
 Write-Host "Backend URL: http://localhost:8000" -ForegroundColor Gray
 Write-Host "API Docs: http://localhost:8000/docs" -ForegroundColor Gray

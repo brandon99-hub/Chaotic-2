@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <template id="chaotic_login_button" inherit_id="web.login">
+    <xpath expr="//div[hasclass('o_login_auth')]" position="after">
+      <div class="o_chaotic_auth mt-3">
+        <!-- Hardware Login Button -->
+        <button type="button" id="chaotic_hardware_login_btn"
+                class="btn btn-primary w-100 mb-2">
+          🔐 Login with Hardware Proof
+        </button>
+
+        <!-- Signup link — routes to our React signup page -->
+        <div class="text-center">
+          <span class="text-muted small">Don't have a Chaotic account?</span>
+          <a href="/chaotic/signup" class="ms-1 small fw-bold">Sign up →</a>
+        </div>
+      </div>
+    </xpath>
+  </template>
+</odoo>

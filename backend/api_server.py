@@ -4,10 +4,37 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Dict, List, Optional
 import uvicorn
+import hmac
+import hashlib
+import time
+import xmlrpc.client
 from zkp_protocol import Server, Client
 from hash_utils import reduce_to_field
 import os
+import socket
 from pathlib import Path
+
+# ── Environment config ──────────────────────────────────────────────────────
+CHAOTIC_SHARED_SECRET = os.environ.get("CHAOTIC_SHARED_SECRET", "chaotic-dev-secret")
+ODOO_URL             = os.environ.get("ODOO_URL", "http://localhost:8069")
+ODOO_DB              = os.environ.get("ODOO_DB", "odoo")
+ODOO_ADMIN_USER      = os.environ.get("ODOO_ADMIN_USER", "admin")
+ODOO_ADMIN_PASSWORD  = os.environ.get("ODOO_ADMIN_PASSWORD", "admin")
+ALLOWED_ORIGINS      = os.environ.get(
+    "ALLOWED_ORIGINS",
+    "http://localhost:5173,http://localhost:3000,http://localhost:8069"
+).split(",")
+
+
+def _sign_response(user_id: str) -> dict:
+    """Create an HMAC-signed timestamp payload for Odoo to verify."""
+    timestamp = int(time.time())
+    signature = hmac.new(
+        CHAOTIC_SHARED_SECRET.encode(),
+        f"{user_id}:{timestamp}".encode(),
+        hashlib.sha256
+    ).hexdigest()
+    return {"timestamp": timestamp, "signature": signature}
 
 # Import hardware components
 try:
@@ -29,7 +56,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -47,6 +74,10 @@ if HARDWARE_AVAILABLE:
     audit_logger = hw_server.audit_logger
 else:
     hw_server = None
+
+# ── Remote Relay Storage ────────────────────────────────────────────────────
+# In a production environment, this would be Redis or a database.
+pending_challenges: Dict[str, Dict] = {}
 
 
 class RegisterRequest(BaseModel):
@@ -92,6 +123,24 @@ class HardwareAuthRequest(BaseModel):
 class DeviceRevocationRequest(BaseModel):
     device_id: str
     reason: str
+
+
+class RemoteInitiateRequest(BaseModel):
+    user_id: str
+    device_id: str
+    site_origin: str
+
+
+class RemoteResponseRequest(BaseModel):
+    challenge_id: str
+    attestation: Dict
+    proof: Dict
+    public_signals: List[str]
+
+
+class RenameDeviceRequest(BaseModel):
+    device_id: str
+    new_alias: str
 
 
 @app.get("/")
@@ -227,8 +276,14 @@ if HARDWARE_AVAILABLE:
     async def enroll_device(request: DeviceEnrollmentRequest):
         """Enroll device with TPM attestation"""
         try:
+            # Use hostname as default machine alias
+            hostname = socket.gethostname()
+            
             result = device_manager.enroll_device(request.device_id, request.user_id)
             if result["success"]:
+                # Set initial alias
+                device_manager.update_machine_alias(request.device_id, hostname)
+                
                 ledger.log_device_enrollment(request.device_id, request.user_id, result["cert_hash"])
                 audit_logger.log_device_enrollment(
                     request.device_id, request.user_id, result["cert_hash"],
@@ -329,21 +384,176 @@ if HARDWARE_AVAILABLE:
                 request.user_id, request.device_id, request.nonce,
                 request.attestation, request.proof, request.public_signals
             )
-            
+
             if not success:
                 raise HTTPException(status_code=401, detail=message)
-            
+
+            # Log this site registration for the "Machine Passport"
+            device_manager.log_site_registration(request.device_id, req.headers.get("origin") or "unknown")
+
+            # Sign the response so Odoo can trust it (HMAC)
+            signed = _sign_response(request.user_id)
+
             return {
                 "success": True,
                 "message": message,
                 "user_id": request.user_id,
                 "device_id": request.device_id,
-                "authenticated_with": "hardware_attestation"
+                "authenticated_with": "hardware_attestation",
+                **signed,
             }
         except HTTPException:
             raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
+
+    @app.post("/api/auth/initiate_remote")
+    async def initiate_remote_auth(request: RemoteInitiateRequest):
+        """Initiate authentication from Machine A to be signed by Machine B."""
+        import uuid
+        challenge_id = str(uuid.uuid4())
+        
+        # Create a challenge
+        challenge_result = hw_server.initiate_authentication(request.user_id, request.device_id)
+        if not challenge_result["success"]:
+            raise HTTPException(status_code=400, detail=challenge_result["error"])
+            
+        pending_challenges[challenge_id] = {
+            "user_id": request.user_id,
+            "device_id": request.device_id,
+            "nonce": challenge_result["nonce"],
+            "site_origin": request.site_origin,
+            "status": "pending",
+            "timestamp": time.time(),
+            "proof_data": None
+        }
+        
+        return {"success": True, "challenge_id": challenge_id, "nonce": challenge_result["nonce"]}
+
+    @app.get("/api/auth/poll_remote/{challenge_id}")
+    async def poll_remote_auth(challenge_id: str):
+        """Poll for the result of a remote authentication request."""
+        if challenge_id not in pending_challenges:
+            raise HTTPException(status_code=404, detail="Challenge not found")
+            
+        challenge = pending_challenges[challenge_id]
+        if challenge["status"] == "signed":
+            # Remove from pending and return proof
+            data = challenge["proof_data"]
+            # Signed response like the verify endpoint
+            signed = _sign_response(challenge["user_id"])
+            return {
+                "success": True, 
+                "status": "verified",
+                "user_id": challenge["user_id"],
+                **data,
+                **signed
+            }
+            
+        return {"success": True, "status": "pending"}
+
+    @app.get("/api/auth/pending/{device_id}")
+    async def get_pending_challenges(device_id: str):
+        """Check for pending challenges for a specific machine."""
+        # Find all pending challenges for this device_id
+        current_time = time.time()
+        relevant = []
+        for cid, chall in pending_challenges.items():
+            if chall["device_id"] == device_id and chall["status"] == "pending":
+                # Expire after 5 minutes
+                if current_time - chall["timestamp"] < 300:
+                    relevant.append({"challenge_id": cid, **chall})
+        
+        return {"challenges": relevant}
+
+    @app.post("/api/auth/respond_remote")
+    async def respond_to_remote_auth(request: RemoteResponseRequest):
+        """Submit the signature for a remote authentication request."""
+        if request.challenge_id not in pending_challenges:
+            raise HTTPException(status_code=404, detail="Challenge not found")
+            
+        chall = pending_challenges[request.challenge_id]
+        
+        # Verify the proof actually works
+        success, message = hw_server.verify_authentication(
+            chall["user_id"], chall["device_id"], chall["nonce"],
+            request.attestation, request.proof, request.public_signals
+        )
+        
+        if not success:
+            raise HTTPException(status_code=401, detail=message)
+            
+        # Update the challenge status
+        pending_challenges[request.challenge_id]["status"] = "signed"
+        pending_challenges[request.challenge_id]["proof_data"] = {
+            "attestation": request.attestation,
+            "proof": request.proof,
+            "public_signals": request.public_signals
+        }
+        
+        return {"success": True, "message": "Remote Challenge Signed Successfully"}
+
+    @app.post("/api/devices/rename")
+    async def rename_device(request: RenameDeviceRequest):
+        """Update the friendly name of a machine."""
+        device_manager.update_machine_alias(request.device_id, request.new_alias)
+        return {"success": True, "message": f"Device renamed to {request.new_alias}"}
+
+
+    # ── Odoo account provisioning ────────────────────────────────────────────
+    class OdooRegisterRequest(BaseModel):
+        hr_id: str          # Chaotic username, used as Odoo login
+        email: str          # User's email for the Odoo account
+        full_name: str = "" # Optional display name
+
+    @app.post("/api/register/odoo")
+    async def register_odoo_user(request: OdooRegisterRequest):
+        """
+        Creates an Odoo user account via XML-RPC after a successful Chaotic
+        registration. The account is created with a random password that is
+        immediately discarded — login is always via ZKP hardware proof.
+        """
+        try:
+            common = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/common")
+            uid = common.authenticate(ODOO_DB, ODOO_ADMIN_USER, ODOO_ADMIN_PASSWORD, {})
+            if not uid:
+                raise HTTPException(status_code=503, detail="Cannot connect to Odoo — check ODOO_ADMIN_USER/PASSWORD")
+
+            models = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/object")
+
+            # Check if user already exists
+            existing = models.execute_kw(
+                ODOO_DB, uid, ODOO_ADMIN_PASSWORD,
+                "res.users", "search",
+                [[[("login", "=", request.email)]]]
+            )
+            if existing:
+                return {"success": True, "message": "Odoo user already exists", "odoo_user_id": existing[0]}
+
+            import secrets
+            random_password = secrets.token_urlsafe(32)  # discarded immediately
+
+            odoo_user_id = models.execute_kw(
+                ODOO_DB, uid, ODOO_ADMIN_PASSWORD,
+                "res.users", "create",
+                [{
+                    "name": request.full_name or request.hr_id,
+                    "login": request.email,
+                    "password": random_password,
+                    "groups_id": [(6, 0, [])],  # no extra groups
+                }]
+            )
+
+            return {
+                "success": True,
+                "message": f"Odoo account created for {request.email}",
+                "odoo_user_id": odoo_user_id
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Odoo provisioning failed: {str(e)}")
     
     
     @app.get("/api/audit/recent")
