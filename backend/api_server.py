@@ -44,9 +44,12 @@ try:
     from srs.ledger import TransparencyLedger
     from audit_logger import get_audit_logger
     HARDWARE_AVAILABLE = True
-except ImportError:
+except Exception as e:
     HARDWARE_AVAILABLE = False
-    print("[Warning] Hardware attestation modules not available - running in simple mode only")
+    print(f"\n[CRITICAL ERROR] Hardware Import Failed: {str(e)}")
+    import traceback
+    traceback.print_exc()
+    print("[Warning] Hardware attestation modules not available - running in simple mode only\n")
 
 app = FastAPI(
     title="zkSNARK Authentication API",
