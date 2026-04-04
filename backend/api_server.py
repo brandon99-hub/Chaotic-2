@@ -87,6 +87,7 @@ class RegisterRequest(BaseModel):
     hr_id: str
     Y: str
     g0: str
+    device_id: str # Crucial for auto-enrollment during signup
 
 
 class LoginRequest(BaseModel):
