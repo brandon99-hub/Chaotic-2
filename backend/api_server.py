@@ -13,8 +13,13 @@ from hash_utils import reduce_to_field
 import os
 import socket
 from pathlib import Path
+import sys
 
 # ── Environment config ──────────────────────────────────────────────────────
+# Fix pathing: Allow backend to see 'srs' and 'data' in the project root
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
 CHAOTIC_SHARED_SECRET = os.environ.get("CHAOTIC_SHARED_SECRET", "chaotic-dev-secret")
 ODOO_URL             = os.environ.get("ODOO_URL", "http://localhost:8069")
 ODOO_DB              = os.environ.get("ODOO_DB", "odoo")
