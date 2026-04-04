@@ -68,6 +68,11 @@ class TPMManager:
             script = "Get-Tpm | ConvertTo-Json -Depth 2"
             tpm_json = self._run_powershell(script)
             info = json.loads(tpm_json) if tpm_json else {}
+            
+            # Robustness check: Ensure info is a dictionary before querying
+            if not isinstance(info, dict):
+                info = {}
+
             self.platform_info.update(
                 {
                     "tpm_present": info.get("TpmPresent", False),
