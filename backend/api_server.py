@@ -611,7 +611,7 @@ if static_dir.exists():
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
-def start_server(host: str = "0.0.0.0", port: int = 8000):
+def start_server(host: str = "0.0.0.0", port: int = 8088):
     print("\n" + "=" * 60)
     print("    zkSNARK Authentication API Server")
     print("=" * 60)

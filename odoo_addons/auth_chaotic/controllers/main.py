@@ -13,7 +13,7 @@ _logger = logging.getLogger(__name__)
 # Shared secret used to verify that responses from FastAPI are authentic.
 # Must match the CHAOTIC_SHARED_SECRET env var on the FastAPI server.
 CHAOTIC_SHARED_SECRET = os.environ.get("CHAOTIC_SHARED_SECRET", "chaotic-dev-secret")
-CHAOTIC_BACKEND_URL = os.environ.get("CHAOTIC_BACKEND_URL", "http://localhost:8000")
+CHAOTIC_BACKEND_URL = os.environ.get("CHAOTIC_BACKEND_URL", "http://localhost:8088")
 
 
 def _verify_hmac(payload: dict) -> bool:
