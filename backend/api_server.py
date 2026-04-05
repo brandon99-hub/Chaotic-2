@@ -10,6 +10,7 @@ import time
 import xmlrpc.client
 from zkp_protocol import Server, Client
 from hash_utils import reduce_to_field
+import db_store
 import os
 import socket
 from pathlib import Path
@@ -172,7 +173,7 @@ async def health_check():
     health_data = {
         "status": "healthy",
         "mode": "simple+hardware" if HARDWARE_AVAILABLE else "simple_only",
-        "users_registered": len(server_instance.users)
+        "users_registered": db_store.count_users()
     }
     
     if HARDWARE_AVAILABLE:

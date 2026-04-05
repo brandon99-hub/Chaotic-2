@@ -18,10 +18,11 @@ if str(current_dir) not in sys.path:
 try:
     from hash_utils import hash_password_to_field, compute_commitment, reduce_to_field
     from zksnark_utils import generate_proof, verify_proof
+    import db_store
 except ImportError:
-    # Handle direct script execution or package imports
     from .hash_utils import hash_password_to_field, compute_commitment, reduce_to_field
     from .zksnark_utils import generate_proof, verify_proof
+    from . import db_store
 
 from hardware.tpm_integration import get_tpm_manager
 from hardware.device_manager import DeviceManager
@@ -44,8 +45,8 @@ class HardwareAttestedServer:
     
     def __init__(self):
         """Initialize server with all components."""
-        self.users = {}  # User commitments
-        self.active_challenges = {}  # Pending challenges
+        # users are now in PostgreSQL — no in-memory dict needed
+        self.active_challenges = {}  # Pending challenges (short-lived, in-memory is fine)
         
         # Initialize managers
         self.device_manager = DeviceManager()
@@ -70,8 +71,8 @@ class HardwareAttestedServer:
         Returns:
             Challenge object with nonce, timestamp, SRS_ID
         """
-        # Check user exists
-        if user_id not in self.users:
+        # Check user exists in DB
+        if not db_store.user_exists(user_id):
             return {
                 "success": False,
                 "error": "User not found"
@@ -95,8 +96,9 @@ class HardwareAttestedServer:
         timestamp = int(time.time())
         srs_id = self.srs_manager.get_default_srs_id()
         
-        # Get user policy (could be role-based, custom, etc.)
-        policy = self.users[user_id].get("policy", "default")
+        # Get user policy from DB
+        user_data = db_store.get_user(user_id)
+        policy = user_data.get("policy", "default") if user_data else "default"
         
         challenge = {
             "user_id": user_id,
@@ -222,7 +224,9 @@ class HardwareAttestedServer:
             
             return True, "Hardware identity verified"
 
-        user_data = self.users[user_id]
+        user_data = db_store.get_user(user_id)
+        if not user_data:
+            return False, "User data not found"
         expected_g0 = str(user_data["g0"])
         expected_Y = str(user_data["Y"])
         
@@ -282,27 +286,12 @@ class HardwareAttestedServer:
     
     def register_user(self, user_id: str, Y: int, g0: int, policy: str = "default") -> Tuple[bool, str]:
         """
-        Register user with commitment.
-        
-        Args:
-            user_id: User identifier
-            Y: Commitment value
-            g0: Random field element
-            policy: Security policy
-        
-        Returns:
-            (success, message) tuple
+        Register user commitment in PostgreSQL.
         """
-        if user_id in self.users:
+        if db_store.user_exists(user_id):
             return False, "User already exists"
-        
-        self.users[user_id] = {
-            "Y": reduce_to_field(Y),
-            "g0": reduce_to_field(g0),
-            "policy": policy,
-            "registered_at": int(time.time())
-        }
-        
+
+        db_store.save_user(user_id, reduce_to_field(Y), reduce_to_field(g0), policy)
         print(f"[Server] Registered user: {user_id}")
         return True, "User registered successfully"
     
