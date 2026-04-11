@@ -64,7 +64,6 @@ class AuditLogger:
         }
         
         self.logger.info(json.dumps(audit_entry))
-    
     def log_authentication_attempt(
         self,
         user_id: str,
@@ -75,7 +74,9 @@ class AuditLogger:
         proof_hash: Optional[str] = None,
         srs_id: Optional[str] = None,
         failure_reason: Optional[str] = None,
-        ip_address: Optional[str] = None
+        ip_address: Optional[str] = None,
+        latency_ms: Optional[float] = None,
+        security_check: Optional[Dict] = None
     ):
         """
         Log authentication attempt.
@@ -90,6 +91,8 @@ class AuditLogger:
             srs_id: SRS ID used
             failure_reason: Reason for failure (if applicable)
             ip_address: Client IP address
+            latency_ms: Execution duration in milliseconds
+            security_check: Dictionary of auto-test results
         """
         self._log_event("AUTH_ATTEMPT", {
             "user_id": user_id,
@@ -100,7 +103,9 @@ class AuditLogger:
             "proof_hash": proof_hash,
             "srs_id": srs_id,
             "failure_reason": failure_reason,
-            "ip_address": ip_address
+            "ip_address": ip_address,
+            "latency_ms": latency_ms,
+            "security_check": security_check
         })
     
     def log_device_enrollment(

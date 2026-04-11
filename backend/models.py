@@ -68,5 +68,9 @@ class AuditLog(Base):
     timestamp = Column(DateTime, default=datetime.datetime.utcnow)
     ip_address = Column(String)
     
+    # Benchmarking and Auto-Testing Fields
+    latency_ms = Column(Integer) # Total verification duration
+    security_check = Column(JSON) # Results of background probes (e.g., {'replay_blocked': true})
+    
     user = relationship("User", back_populates="auth_logs")
     device = relationship("Device", back_populates="auth_logs")

@@ -174,6 +174,37 @@ def list_device_ids() -> list:
         db.close()
 
 
+def get_audit_stats() -> dict:
+    """Aggregate real-world performance and security metrics from AuditLog."""
+    from models import AuditLog
+    from sqlalchemy import func
+    db = SessionLocal()
+    try:
+        # Average Latency
+        avg_lat = db.query(func.avg(AuditLog.latency_ms)).filter(AuditLog.latency_ms > 0).scalar() or 0
+        
+        # Total counts
+        total_auths = db.query(AuditLog).filter(AuditLog.event_type == "AUTH_ATTEMPT").count()
+        
+        # Security Probe Stats
+        # We look for the 'replay_blocked' key in the security_check JSON
+        replays_blocked = 0
+        all_probes = db.query(AuditLog.security_check).filter(AuditLog.security_check != None).all()
+        for probe in all_probes:
+            if probe[0] and probe[0].get("replay_blocked"):
+                replays_blocked += 1
+        
+        # Mocking some baseline for missing data points if necessary
+        return {
+            "avg_latency": float(avg_lat),
+            "total_auths": total_auths,
+            "replays_blocked": replays_blocked,
+            "security_score": 100.0 if (total_auths == 0 or replays_blocked > 0) else 0.0 # simplified logic
+        }
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
