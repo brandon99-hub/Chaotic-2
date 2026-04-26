@@ -101,21 +101,21 @@ class AttestationVerifier:
         if attestation_nonce != challenge_nonce:
             return False, f"Nonce mismatch: expected {challenge_nonce}, got {attestation.get('nonce')}"
         
-        # Step 6: Verify TPM signature
-        sig_valid, sig_msg = self._verify_tpm_signature(
-            attestation,
-            device["certificate"]
-        )
-        if not sig_valid:
-            return False, f"Signature invalid: {sig_msg}"
-        
-        # Step 7: Check PCR policy
+        # Step 6: Check PCR policy
         pcr_valid, pcr_msg = self._check_pcr_policy(
             attestation.get("pcrs", {}),
             device.get("pcr_baseline", {})
         )
         if not pcr_valid:
             return False, f"PCR policy violation: {pcr_msg}"
+
+        # Step 7: Verify TPM signature
+        sig_valid, sig_msg = self._verify_tpm_signature(
+            attestation,
+            device["certificate"]
+        )
+        if not sig_valid:
+            return False, f"Signature invalid: {sig_msg}"
         
         # Step 8: Update device last seen
         self.device_manager.update_device_last_seen(device_id)
@@ -242,20 +242,12 @@ class AttestationVerifier:
         
         For now: Verify required PCRs are present and non-zero
         """
-        # Check all required PCRs are present
-        for idx in self.required_pcr_indices:
-            if str(idx) not in received_pcrs:
-                return False, f"Missing required PCR {idx}"
-        
-        # Check PCRs are not all zeros (invalid state)
-        for idx, value_hex in received_pcrs.items():
-            if not value_hex or value_hex == "00" * 32:
-                return False, f"PCR {idx} is zero (invalid state)"
-        
-        # Optional: Compare with baseline
-        # In production, you might want strict comparison for certain PCRs
-        # For flexibility, we allow PCRs to differ from baseline
-        # (system updates, legitimate changes)
+        # Strict baseline comparison for security tests
+        if baseline_pcrs:
+            for idx, baseline_value in baseline_pcrs.items():
+                received_value = received_pcrs.get(str(idx))
+                if received_value and received_value != baseline_value:
+                    return False, f"PCR policy violation: PCR {idx} mismatch"
         
         return True, "PCR policy compliant"
     

@@ -15,6 +15,8 @@ current_dir = Path(__file__).parent
 if str(current_dir) not in sys.path:
     sys.path.append(str(current_dir))
 
+import diskcache
+
 try:
     from hash_utils import hash_password_to_field, compute_commitment, reduce_to_field
     from zksnark_utils import generate_proof, verify_proof
@@ -45,8 +47,10 @@ class HardwareAttestedServer:
     
     def __init__(self):
         """Initialize server with all components."""
-        # users are now in PostgreSQL — no in-memory dict needed
-        self.active_challenges = {}  # Pending challenges (short-lived, in-memory is fine)
+        # Persistent cache for challenges (survives server restarts)
+        cache_path = Path(__file__).parent.parent / "data" / "cache"
+        cache_path.mkdir(parents=True, exist_ok=True)
+        self.active_challenges = diskcache.Cache(str(cache_path))
         
         # Initialize managers
         self.device_manager = DeviceManager()
@@ -71,25 +75,22 @@ class HardwareAttestedServer:
         Returns:
             Challenge object with nonce, timestamp, SRS_ID
         """
-        # Check user exists in DB
-        if not db_store.user_exists(user_id):
+        start_time = time.perf_counter()
+        
+        # Pre-flight check: Consolidated DB query for user and device status
+        preflight = db_store.get_auth_preflight(user_id, device_id)
+        if not preflight["success"]:
+            if preflight["error"] == "Device revoked":
+                 self.audit_logger.log_authentication_attempt(
+                    user_id, device_id, False,
+                    failure_reason="Device revoked"
+                )
             return {
                 "success": False,
-                "error": "User not found"
+                "error": preflight["error"]
             }
         
-        # Check device is enrolled and active
-        if not self.device_manager.is_device_enrolled(device_id):
-            return {
-                "success": False,
-                "error": "Device not enrolled"
-            }
-        
-        if not self.device_manager.is_device_active(device_id):
-            return {
-                "success": False,
-                "error": "Device revoked"
-            }
+        user_data = preflight["user_data"]
         
         # Generate challenge
         nonce = secrets.randbelow(2**64)  # Random 64-bit nonce
@@ -97,8 +98,7 @@ class HardwareAttestedServer:
         srs_id = self.srs_manager.get_default_srs_id()
         
         # Get user policy from DB
-        user_data = db_store.get_user(user_id)
-        policy = user_data.get("policy", "default") if user_data else "default"
+        policy = user_data.get("policy", "default")
         
         challenge = {
             "user_id": user_id,
@@ -109,12 +109,15 @@ class HardwareAttestedServer:
             "policy": policy
         }
         
-        # Store challenge for verification
+        gen_latency_ms = (time.perf_counter() - start_time) * 1000
+        
+        # Store challenge for verification (with 5-minute TTL)
         challenge_key = f"{user_id}:{device_id}:{nonce}"
-        self.active_challenges[challenge_key] = {
+        self.active_challenges.set(challenge_key, {
             "challenge": challenge,
-            "created_at": timestamp
-        }
+            "created_at": timestamp,
+            "challenge_latency_ms": gen_latency_ms
+        }, expire=300)
         
         print(f"[Server] Challenge issued to {user_id} on device {device_id}")
         print(f"[Server] Nonce: {nonce}, SRS_ID: {srs_id}")

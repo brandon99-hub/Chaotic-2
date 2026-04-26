@@ -24,8 +24,9 @@ def test_commitment_math():
 
 def test_server_registration_logic():
     """Verify that the Server class correctly handles registration and duplicates."""
+    import uuid
     server = Server()
-    user_id = "test_user_77@example.com"
+    user_id = f"test_user_{uuid.uuid4().hex[:8]}@example.com"
     Y = 12345
     g0 = 67890
     
@@ -51,12 +52,10 @@ def test_protocol_full_handshake():
     Y = compute_commitment(g0, secret_x)
     server.register_user(user_id, Y, g0)
     
-    # 2. Authentication Logic (Mocked signals)
-    # This proves the mathematical logic that g0 and Y are sufficient for verification
-    # without the server knowing secret_x.
-    proof = {"machine_verified": True}
-    public_signals = [user_id, "DEV_001", "NONCE_001"]
+    # 2. Authentication Logic (Real signals via Client)
+    client = Client()
+    client.register(user_id, password, g0)
+    auth_data = client.login(user_id, password)
     
-    # Note: In our current simple mode, authenticate_user matches stored Y/g0
-    success, msg = server.authenticate_user(user_id, proof, public_signals)
+    success, msg = server.authenticate_user(user_id, auth_data["proof"], auth_data["public_signals"])
     assert success is True

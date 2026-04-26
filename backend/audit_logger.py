@@ -76,6 +76,7 @@ class AuditLogger:
         failure_reason: Optional[str] = None,
         ip_address: Optional[str] = None,
         latency_ms: Optional[float] = None,
+        challenge_latency_ms: Optional[float] = None,
         security_check: Optional[Dict] = None
     ):
         """
@@ -92,6 +93,7 @@ class AuditLogger:
             failure_reason: Reason for failure (if applicable)
             ip_address: Client IP address
             latency_ms: Execution duration in milliseconds
+            challenge_latency_ms: Duration of challenge generation step
             security_check: Dictionary of auto-test results
         """
         self._log_event("AUTH_ATTEMPT", {
@@ -105,8 +107,40 @@ class AuditLogger:
             "failure_reason": failure_reason,
             "ip_address": ip_address,
             "latency_ms": latency_ms,
+            "challenge_latency_ms": challenge_latency_ms,
             "security_check": security_check
         })
+        
+        try:
+            from database import SessionLocal
+            from models import AuditLog, User, Device
+            db = SessionLocal()
+            try:
+                user = db.query(User).filter(User.hr_id == user_id).first()
+                device = db.query(Device).filter(Device.device_id == device_id).first()
+                log = AuditLog(
+                    user_id=user.id if user else None,
+                    device_id=device.id if device else None,
+                    event_type="AUTH_ATTEMPT",
+                    success=success,
+                    failure_reason=failure_reason,
+                    attestation_digest=attestation_digest,
+                    proof_hash=proof_hash,
+                    srs_id=srs_id,
+                    ip_address=ip_address,
+                    latency_ms=latency_ms or 0.0,
+                    challenge_latency_ms=challenge_latency_ms or 0.0,
+                    security_check=security_check
+                )
+                db.add(log)
+                db.commit()
+            except Exception as sql_e:
+                db.rollback()
+                self.logger.error(f"SQL Error: {sql_e}")
+            finally:
+                db.close()
+        except Exception as global_e:
+            self.logger.error(f"DB Import Error: {global_e}")
     
     def log_device_enrollment(
         self,

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, JSON, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, JSON, Text, Float
 from sqlalchemy.orm import relationship
 import datetime
 try:
@@ -69,7 +69,8 @@ class AuditLog(Base):
     ip_address = Column(String)
     
     # Benchmarking and Auto-Testing Fields
-    latency_ms = Column(Integer) # Total verification duration
+    latency_ms = Column(Float) # Total verification duration
+    challenge_latency_ms = Column(Float) # Time taken to issue challenge
     security_check = Column(JSON) # Results of background probes (e.g., {'replay_blocked': true})
     
     user = relationship("User", back_populates="auth_logs")

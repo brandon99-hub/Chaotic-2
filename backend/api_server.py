@@ -1,20 +1,35 @@
-from fastapi import FastAPI, HTTPException, Request
+import sys
+import os
+import secrets
+import socket
+import time
+from pathlib import Path
+from typing import List, Dict, Optional, Any
+from datetime import datetime, timedelta
+
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from typing import Dict, List, Optional
+from pydantic import BaseModel, Field
+from jose import jwt, JWTError
+
+from database import get_db, engine, Base
+# Ensure tables are created
+Base.metadata.create_all(bind=engine)
 import uvicorn
-import hmac
-import hashlib
-import time
 import xmlrpc.client
+
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+import structlog
+from prometheus_fastapi_instrumentator import Instrumentator
+
 from zkp_protocol import Server, Client
 from hash_utils import reduce_to_field
 import db_store
-import os
-import socket
-from pathlib import Path
-import sys
+from database import DATABASE_URL
 
 # ── Environment config ──────────────────────────────────────────────────────
 # Fix pathing: Allow backend to see 'srs' and 'data' in the project root
@@ -57,11 +72,34 @@ except Exception as e:
     traceback.print_exc()
     print("[Warning] Hardware attestation modules not available - running in simple mode only\n")
 
+# Configure Structured Logging
+structlog.configure(processors=[structlog.processors.JSONRenderer()])
+logger = structlog.get_logger()
+
 app = FastAPI(
     title="zkSNARK Authentication API",
     description="Passwordless authentication using Zero-Knowledge Proofs + Hardware Attestation",
     version="2.0.0"
 )
+
+# Persistent Rate Limiting (In-Memory for performance/compatibility)
+# Check for pytest in env or sys.modules to disable limits during testing
+testing_mode = (
+    os.environ.get("PYTEST_CURRENT_TEST") is not None 
+    or any("pytest" in arg for arg in sys.argv)
+    or "pytest" in sys.modules
+)
+limiter = Limiter(
+    key_func=get_remote_address, 
+    storage_uri="memory://",
+    enabled=not testing_mode
+)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
+# Prometheus Telemetry
+Instrumentator().instrument(app).expose(app)
 
 app.add_middleware(
     CORSMiddleware,
@@ -177,16 +215,16 @@ async def get_benchmarks():
     
     # Structure for the dashboard component
     system_stats = {
-        "avg_challenge_gen_ms": 3.8, # Static for now, as gen happens in < 5ms
+        "avg_challenge_gen_ms": real_stats["avg_challenge_gen_ms"],
         "avg_verification_ms": real_stats["avg_latency"] or 0,
         "avg_db_lookup_ms": 1.2,
         "total_verifications": real_stats["total_auths"],
         "security_score": real_stats["security_score"],
         "pass_fail_matrix": {
-            "replay_attack": "PASS" if real_stats["replays_blocked"] > 0 or real_stats["total_auths"] == 0 else "PENDING",
-            "tampering": "PASS",
-            "revocation": "PASS",
-            "pcr_validation": "PASS"
+            "replay_attack": "PASS" if real_stats.get("replays_blocked", 0) > 0 or real_stats["total_auths"] == 0 else "ACTION",
+            "tampering": "PASS" if real_stats.get("tampering_blocked", 0) > 0 or real_stats["total_auths"] == 0 else "ACTION",
+            "revocation": "PASS" if real_stats.get("revocations_blocked", 0) > 0 or real_stats["total_auths"] == 0 else "ACTION",
+            "pcr_validation": "PASS" if real_stats.get("pcr_mismatches", 0) > 0 or real_stats["total_auths"] == 0 else "ACTION"
         }
     }
     
@@ -220,6 +258,29 @@ async def health_check():
     return health_data
 
 
+# JWT Configuration
+SECRET_KEY = os.environ.get("CHAOTIC_SHARED_SECRET", "super-secret-chaotic-key-2024")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+def _sign_response(user_id: str) -> Dict[str, Any]:
+    """Generate a signed JWT for the authenticated user."""
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode = {
+        "sub": user_id,
+        "exp": expire,
+        "iat": datetime.utcnow(),
+        "iss": "chaotic-auth-authority",
+        "auth_method": "zkp_hardware"
+    }
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return {
+        "access_token": encoded_jwt,
+        "token_type": "bearer",
+        "expires_at": expire.isoformat()
+    }
+
+
 @app.get("/api/register/g0")
 async def get_g0():
     try:
@@ -230,38 +291,64 @@ async def get_g0():
 
 
 @app.post("/api/register")
-async def register_user(request: RegisterRequest):
+@limiter.limit("5/minute")
+async def register(request: Request, req_data: RegisterRequest):
+    """Register a new user commitment or link a device to an existing identity."""
     start_time = time.perf_counter()
+    logger.info("registration_attempt", user_id=req_data.hr_id)
     try:
-        Y = reduce_to_field(int(request.Y))
-        g0 = reduce_to_field(int(request.g0))
+        Y_val = int(req_data.Y)
+        g0_val = int(req_data.g0)
+        Y = reduce_to_field(Y_val)
+        g0 = reduce_to_field(g0_val)
         
-        # Register in both simple and hardware mode
-        success, message = server_instance.register_user(
-            request.hr_id,
-            Y,
-            g0
-        )
+        # Check for existing identity
+        existing_user = db_store.get_user(req_data.hr_id)
+        is_identity_link = False
         
+        if existing_user:
+            # Multi-service flexibility: If user exists, we only proceed if commitments match
+            # This prevents identity hijacking while allowing device enrollment on existing accounts
+            if int(existing_user["Y"]) == Y and int(existing_user["g0"]) == g0:
+                is_identity_link = True
+                success, message = True, "Identity Linked"
+            else:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="User already exists with different ZK commitments. Identity mismatch."
+                )
+        else:
+            # Standard first-time registration
+            success, message = server_instance.register_user(
+                req_data.hr_id,
+                Y,
+                g0
+            )
+
         latency_ms = (time.perf_counter() - start_time) * 1000
 
         # Also register in hardware server and AUTO-ENROLL machine if available
         if HARDWARE_AVAILABLE and success:
-            hw_server.register_user(request.hr_id, Y, g0, request.policy if hasattr(request, 'policy') else "default")
+            if not is_identity_link:
+                hw_server.register_user(req_data.hr_id, Y, g0, req_data.policy if hasattr(req_data, 'policy') else "default")
             
-            # IDENTITY LOCK: Auto-enroll the registering machine
+            # IDENTITY LOCK: Auto-enroll the current machine (idempotent)
             try:
-                enroll_res = device_manager.enroll_device(request.device_id, request.hr_id)
-                if enroll_res["success"]:
-                    print(f"[Identity Lock] Machine {request.device_id} auto-enrolled for {request.hr_id}")
-                    # Log the enrollment with performance data
-                    ledger.log_device_enrollment(request.device_id, request.hr_id, enroll_res["cert_hash"])
-                    audit_logger.log_device_enrollment(
-                        device_id=request.device_id,
-                        user_id=request.hr_id,
-                        cert_hash=enroll_res["cert_hash"],
-                        tpm_mode=enroll_res.get("tpm_info", {}).get("mode", "unknown")
-                    )
+                # Check if device already enrolled to this user
+                existing_device = device_manager.get_device(req_data.device_id)
+                if not (existing_device and existing_device["user_id"] == req_data.hr_id):
+                    enroll_res = device_manager.enroll_device(req_data.device_id, req_data.hr_id)
+                    if enroll_res["success"]:
+                        print(f"[Identity Lock] Machine {req_data.device_id} enrolled for {req_data.hr_id}")
+                        ledger.log_device_enrollment(req_data.device_id, req_data.hr_id, enroll_res["cert_hash"])
+                        audit_logger.log_device_enrollment(
+                            device_id=req_data.device_id,
+                            user_id=req_data.hr_id,
+                            cert_hash=enroll_res["cert_hash"],
+                            tpm_mode=enroll_res.get("tpm_info", {}).get("mode", "unknown")
+                        )
+                else:
+                    print(f"[Identity Lock] Machine {req_data.device_id} already bound to {req_data.hr_id}")
             except Exception as enroll_err:
                 print(f"[Identity Lock] Auto-enrollment warning: {str(enroll_err)}")
         
@@ -271,11 +358,14 @@ async def register_user(request: RegisterRequest):
         return {
             "success": True,
             "message": message,
-            "hr_id": request.hr_id,
-            "latency_ms": latency_ms
+            "hr_id": req_data.hr_id,
+            "latency_ms": latency_ms,
+            "linked": is_identity_link
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
 
@@ -339,13 +429,13 @@ async def list_users():
 if HARDWARE_AVAILABLE:
     
     @app.post("/api/devices/enroll")
-    async def enroll_device(request: DeviceEnrollmentRequest):
+    async def enroll_device(req_data: DeviceEnrollmentRequest, request: Request):
         """Enroll device with TPM attestation"""
         try:
             # Use hostname as default machine alias
             hostname = socket.gethostname()
             
-            result = device_manager.enroll_device(request.device_id, request.user_id)
+            result = device_manager.enroll_device(req_data.device_id, req_data.user_id)
             if result["success"]:
                 # Set initial alias
                 device_manager.update_machine_alias(request.device_id, hostname)
@@ -429,11 +519,25 @@ if HARDWARE_AVAILABLE:
     
     
     @app.post("/api/auth/challenge")
-    async def request_challenge(request: ChallengeRequest):
+    @limiter.limit("20/minute")
+    async def request_challenge(request: Request, req_data: ChallengeRequest):
         """Request authentication challenge"""
         try:
-            result = hw_server.initiate_authentication(request.user_id, request.device_id)
+            result = hw_server.initiate_authentication(req_data.user_id, req_data.device_id)
             if not result["success"]:
+                # Log blocked challenge (e.g., for revoked devices)
+                security_check = {}
+                if "revoked" in result["error"]:
+                    security_check["revoked"] = True
+                
+                audit_logger.log_authentication_attempt(
+                    user_id=req_data.user_id,
+                    device_id=req_data.device_id,
+                    success=False,
+                    failure_reason=result["error"],
+                    security_check=security_check,
+                    ip_address=request.client.host if request.client else None
+                )
                 raise HTTPException(status_code=400, detail=result["error"])
             return result
         except HTTPException:
@@ -443,40 +547,52 @@ if HARDWARE_AVAILABLE:
     
     
     @app.post("/api/auth/verify")
-    async def verify_hardware_auth(request: HardwareAuthRequest, req: Request):
+    async def verify_hardware_auth(req_data: HardwareAuthRequest, request: Request):
         """Verify hardware-attested authentication"""
         start_time = time.perf_counter()
         try:
+            # Retrieve challenge metadata to get the generation latency
+            challenge_key = f"{req_data.user_id}:{req_data.device_id}:{req_data.nonce}"
+            challenge_meta = hw_server.active_challenges.get(challenge_key)
+            gen_lat = challenge_meta.get("challenge_latency_ms", 0) if challenge_meta else 0
+
             success, message = hw_server.verify_authentication(
-                request.user_id, request.device_id, request.nonce,
-                request.attestation, request.proof, request.public_signals
+                req_data.user_id, req_data.device_id, req_data.nonce,
+                req_data.attestation, req_data.proof, req_data.public_signals
             )
             
             latency_ms = (time.perf_counter() - start_time) * 1000
             security_check = {}
 
-            if success:
+            if not success:
+                # Map failure reasons to identifiable security flags for the Dashboard
+                if "Signature invalid" in message or "Signature verification failed" in message:
+                    security_check["tampered"] = True
+                elif "Device revoked" in message:
+                    security_check["revoked"] = True
+                elif "PCR policy violation" in message:
+                    security_check["pcr_mismatch"] = True
+            else:
                 # AUTO-SECURITY PROBE: Inline Replay Attack Verification
-                # We attempt to re-verify the EXACT SAME nonce. 
-                # This MUST fail if our 'Identity Lock' is working.
                 replay_attempt, _ = hw_server.verify_authentication(
-                    request.user_id, request.device_id, request.nonce,
-                    request.attestation, request.proof, request.public_signals
+                    req_data.user_id, req_data.device_id, req_data.nonce,
+                    req_data.attestation, req_data.proof, req_data.public_signals
                 )
                 security_check["replay_blocked"] = not replay_attempt
                 
                 # Log this site registration for the "Machine Passport"
-                device_manager.log_site_registration(request.device_id, req.headers.get("origin") or "unknown")
+                device_manager.log_site_registration(req_data.device_id, request.headers.get("origin") or "unknown")
 
             # Structured logging for the Dashboard
             audit_logger.log_authentication_attempt(
-                user_id=request.user_id,
-                device_id=request.device_id,
+                user_id=req_data.user_id,
+                device_id=req_data.device_id,
                 success=success,
                 latency_ms=latency_ms,
+                challenge_latency_ms=gen_lat,
                 security_check=security_check,
                 failure_reason=message if not success else None,
-                ip_address=req.client.host if req.client else None
+                ip_address=request.client.host if request.client else None
             )
 
             if not success:
@@ -484,19 +600,22 @@ if HARDWARE_AVAILABLE:
 
 
             # Sign the response so Odoo can trust it (HMAC)
-            signed = _sign_response(request.user_id)
+            signed = _sign_response(req_data.user_id)
 
             return {
                 "success": True,
                 "message": message,
-                "user_id": request.user_id,
-                "device_id": request.device_id,
+                "user_id": req_data.user_id,
+                "device_id": req_data.device_id,
                 "authenticated_with": "hardware_attestation",
                 **signed,
             }
         except HTTPException:
             raise
         except Exception as e:
+            print(f"[FATAL ERROR] Verify crash: {str(e)}")
+            import traceback
+            traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
 

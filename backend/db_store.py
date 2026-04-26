@@ -166,6 +166,41 @@ def count_devices_by_status() -> dict:
         db.close()
 
 
+def get_auth_preflight(hr_id: str, device_id: str) -> dict:
+    """Consolidated check for user and device status to reduce latency."""
+    db = SessionLocal()
+    try:
+        user = db.query(UserModel).filter(UserModel.hr_id == hr_id).first()
+        if not user:
+            return {"success": False, "error": "User not found"}
+        
+        device = db.query(DeviceModel).filter(DeviceModel.device_id == device_id).first()
+        if not device:
+            return {"success": False, "error": "Device not enrolled"}
+        
+        # Check if the device belongs to the user
+        if device.user_id != user.id:
+            return {"success": False, "error": "Device not linked to this user"}
+            
+        if device.status != "active":
+            return {"success": False, "error": "Device revoked"}
+            
+        return {
+            "success": True,
+            "user_data": {
+                "Y": int(user.Y),
+                "g0": int(user.g0),
+                "policy": user.policy or "default",
+            },
+            "device_data": {
+                "status": device.status,
+                "machine_alias": device.machine_alias
+            }
+        }
+    finally:
+        db.close()
+
+
 def list_device_ids() -> list:
     db = SessionLocal()
     try:
@@ -180,8 +215,9 @@ def get_audit_stats() -> dict:
     from sqlalchemy import func
     db = SessionLocal()
     try:
-        # Average Latency
+        # Average Latencies
         avg_lat = db.query(func.avg(AuditLog.latency_ms)).filter(AuditLog.latency_ms > 0).scalar() or 0
+        avg_gen_lat = db.query(func.avg(AuditLog.challenge_latency_ms)).filter(AuditLog.challenge_latency_ms > 0).scalar() or 0
         
         # Total counts
         total_auths = db.query(AuditLog).filter(AuditLog.event_type == "AUTH_ATTEMPT").count()
@@ -189,16 +225,25 @@ def get_audit_stats() -> dict:
         # Security Probe Stats
         # We look for the 'replay_blocked' key in the security_check JSON
         replays_blocked = 0
+        tampering_blocked = 0
+        revocations_blocked = 0
+        pcr_mismatches = 0
         all_probes = db.query(AuditLog.security_check).filter(AuditLog.security_check != None).all()
         for probe in all_probes:
-            if probe[0] and probe[0].get("replay_blocked"):
-                replays_blocked += 1
+            if probe[0]:
+                if probe[0].get("replay_blocked"): replays_blocked += 1
+                if probe[0].get("tampered"): tampering_blocked += 1
+                if probe[0].get("revoked"): revocations_blocked += 1
+                if probe[0].get("pcr_mismatch"): pcr_mismatches += 1
         
-        # Mocking some baseline for missing data points if necessary
         return {
             "avg_latency": float(avg_lat),
+            "avg_challenge_gen_ms": float(avg_gen_lat),
             "total_auths": total_auths,
             "replays_blocked": replays_blocked,
+            "tampering_blocked": tampering_blocked,
+            "revocations_blocked": revocations_blocked,
+            "pcr_mismatches": pcr_mismatches,
             "security_score": 100.0 if (total_auths == 0 or replays_blocked > 0) else 0.0 # simplified logic
         }
     finally:
